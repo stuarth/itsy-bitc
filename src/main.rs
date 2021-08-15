@@ -1,7 +1,6 @@
-use std::io::{self, Cursor, Write, Read};
+use std::io::{self, Write, Read};
 use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-use sha2::{Digest, Sha256};
 
 
 #[derive(Clone, Copy)]
@@ -55,16 +54,12 @@ impl Network {
     }
 
     pub fn deserialize_from(&self, buf: &mut [u8]) -> anyhow::Result<Message> {
-        let mut rdr = &mut &buf[4 + 12..];
+        let rdr = &mut &buf[..];
 
-        let magic = (&mut &buf[..]).read_u32::<LittleEndian>()?;
-
-        println!("{:x?}", &buf);
+        let magic = rdr.read_u32::<LittleEndian>()?;
 
         let mut command = [0u8; 12];
-        (&mut &buf[4..]).read_exact(&mut command)?;
-        
-        // let pos = command.iter().position(|b| *b == 0).unwrap();
+        rdr.read_exact(&mut command)?;
 
         let c = std::str::from_utf8(&command[..]).unwrap().trim_end_matches('\0');
 
@@ -74,7 +69,6 @@ impl Network {
             _ => println!("unknown!"),
         };
 
-        let mut rdr = &mut &buf[4 + 12..];
         println!("length {:x?}", &rdr[..4]);
         let length = rdr.read_u32::<LittleEndian>()?;
         let sha2 = rdr.read_u32::<LittleEndian>();
