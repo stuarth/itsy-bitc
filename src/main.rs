@@ -1,7 +1,6 @@
-use std::io::{self, Write, Read};
-use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-
+use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 
 #[derive(Clone, Copy)]
 struct Network {
@@ -9,7 +8,7 @@ struct Network {
     port: u16,
 }
 
-use messages::{Message};
+use messages::Message;
 
 impl Network {
     fn testnet() -> Self {
@@ -61,7 +60,9 @@ impl Network {
         let mut command = [0u8; 12];
         rdr.read_exact(&mut command)?;
 
-        let c = std::str::from_utf8(&command[..]).unwrap().trim_end_matches('\0');
+        let c = std::str::from_utf8(&command[..])
+            .unwrap()
+            .trim_end_matches('\0');
 
         match c {
             "version" => println!("version found"),
@@ -77,7 +78,6 @@ impl Network {
         println!("payload {:x?}", &payload);
 
         Ok(Message::Verack {})
-
     }
 }
 
@@ -114,17 +114,8 @@ mod messages {
 
     use super::NetAddr;
     use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-    use std::io::{self, Write};
     use sha2::{Digest, Sha256};
-
-    // #[derive(Debug)]
-    // pub(crate) struct Message {
-    //     magic: u32,
-    //     command: [u8; 12],
-    //     // length: u32,
-    //     // checksum: u32,
-    //     payload: Payload,
-    // }
+    use std::io::{self, Write};
 
     #[derive(Debug)]
     pub enum Message {
@@ -157,10 +148,8 @@ mod messages {
                     user_agent,
                     start_height,
                     relay,
-                } => {
-                    
-                },
-                Message::Verack {} => {},
+                } => {}
+                Message::Verack {} => {}
             }
 
             Ok(bytes)
@@ -181,7 +170,7 @@ mod messages {
             bytes.copy_from_slice(&sha2[0..4]);
             bytes
         }
-    } 
+    }
 
     pub fn as_command<S: AsRef<[u8]>>(s: S) -> [u8; 12] {
         let mut bytes = [0u8; 12];
@@ -197,13 +186,35 @@ fn main() {
     // let mut peer = network.connect(("34.239.184.228", 18333)).unwrap();
 
     // peer.handshake();
+}
 
-    let mut network = Network::testnet();
-    let verack = network.verack();
-    let mut msg_bytes =  network.serialize_to(&verack).unwrap();
-    println!("{:x?}", msg_bytes);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let msg = network.deserialize_from(&mut msg_bytes).unwrap();
+    #[test]
+    fn verack_roundtrip() {
+        let network = Network::testnet();
+        let verack = network.verack();
+        let mut msg_bytes = network.serialize_to(&verack).unwrap();
+        let msg = network.deserialize_from(&mut msg_bytes).unwrap();
 
-    dbg!(msg);
+        match msg {
+            Message::Verack { .. } => assert!(true),
+            _ => assert!(false)
+        }
+    }
+
+    #[test]
+    fn version_roundtrip() {
+        let network = Network::testnet();
+        let version = network.version_message();
+        let mut msg_bytes = network.serialize_to(&version).unwrap();
+        let msg = network.deserialize_from(&mut msg_bytes).unwrap();
+
+        match msg {
+            Message::Version { .. } => assert!(true),
+            _ => assert!(false)
+        }
+    }
 }
