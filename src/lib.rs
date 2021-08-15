@@ -110,6 +110,38 @@ pub struct NetAddr {
     port: u16,
 }
 
+impl NetAddr {
+    pub fn serialize_to(&self) -> io::Result<Vec<u8>> {
+        let mut bytes =  vec![];
+
+        if !self.version_message {
+            // Time is not present in version message.
+            bytes.write_all(&self.time.to_le_bytes())?;
+        }
+
+        //ip_addr
+        self.ip_addr.serialize_to(&mut bytes)?;
+
+        // port is BE
+        bytes.write_all(&self.port.to_be_bytes())?;
+
+        Ok(bytes)
+    }
+}
+
+pub trait SerializeTo {
+    fn serialize_to(&self, buf: &mut [u8]) -> io::Result<u8>;
+}
+
+impl SerializeTo for  Ipv4Addr {
+    fn serialize_to(&self, buf: &mut [u8]) -> io::Result<u8> {
+        let mut bytes = [0u8;  16];
+        (&mut bytes[12..]).write_all(&self.octets())?;
+        buf.copy_from_slice(&bytes);
+
+        Ok(16)
+    }
+}
 mod messages {
 
     use super::NetAddr;
