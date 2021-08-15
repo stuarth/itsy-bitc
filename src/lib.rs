@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 
 #[derive(Clone, Copy)]
-struct Network {
+pub struct Network {
     magic: u32,
     port: u16,
 }
@@ -11,14 +11,14 @@ struct Network {
 use messages::Message;
 
 impl Network {
-    fn testnet() -> Self {
+    pub fn testnet() -> Self {
         Network {
             magic: 0xDAB5BFFA,
             port: 18333,
         }
     }
 
-    fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<Peer, io::Error> {
+    pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<Peer, io::Error> {
         let s = TcpStream::connect(addr)?;
 
         let peer = Peer {
@@ -29,15 +29,15 @@ impl Network {
         Ok(peer)
     }
 
-    fn version_message(&self) -> Message {
+    pub fn version_message(&self) -> Message {
         todo!()
     }
 
-    fn verack(&self) -> Message {
+    pub fn verack(&self) -> Message {
         Message::Verack {}
     }
 
-    pub(crate) fn serialize_to(&self, message: &Message) -> io::Result<Vec<u8>> {
+    pub fn serialize_to(&self, message: &Message) -> io::Result<Vec<u8>> {
         let mut bytes = vec![];
 
         let message_bytes = message.serialize_to()?;
@@ -81,20 +81,20 @@ impl Network {
     }
 }
 
-struct Peer {
+pub struct Peer {
     s: TcpStream,
     network: Network,
 }
 
 impl Peer {
-    fn handshake(&mut self) -> Result<(), io::Error> {
+    pub fn handshake(&mut self) -> Result<(), io::Error> {
         let version_message = self.network.version_message();
         self.send(version_message)?;
 
         Ok(())
     }
 
-    fn send(&mut self, message: messages::Message) -> io::Result<()> {
+    pub fn send(&mut self, message: messages::Message) -> io::Result<()> {
         let mut bytes = message.serialize_to()?;
         self.s.write_all(&mut bytes)?;
 
@@ -188,15 +188,6 @@ mod messages {
         (&mut bytes[..]).write(s.as_ref()).unwrap();
         bytes
     }
-}
-
-fn main() {
-    // dig A seed.tbtc.petertodd.org
-    // let mut network = Network::testnet();
-
-    // let mut peer = network.connect(("34.239.184.228", 18333)).unwrap();
-
-    // peer.handshake();
 }
 
 #[cfg(test)]
