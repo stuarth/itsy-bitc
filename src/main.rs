@@ -12,7 +12,7 @@ use messages::Message;
 
 impl Network {
     fn testnet() -> Self {
-        Self {
+        Network {
             magic: 0xDAB5BFFA,
             port: 18333,
         }
@@ -135,6 +135,8 @@ mod messages {
 
     impl Message {
         pub(crate) fn serialize_to(&self) -> io::Result<Vec<u8>> {
+            // Almost all integers are encoded in little endian. Only IP or port number are encoded big endian. All field sizes are numbers of bytes.
+
             let mut bytes = vec![];
 
             match self {
@@ -148,7 +150,16 @@ mod messages {
                     user_agent,
                     start_height,
                     relay,
-                } => {}
+                } => {
+                    bytes.write_all(&version.to_le_bytes())?;
+                    bytes.write_all(&services.to_le_bytes())?;
+                    bytes.write_all(&timestamp.to_le_bytes())?;
+                    // addr_recv
+                    // addr_from
+                    bytes.write_all(&nonce.to_le_bytes())?;
+                    // user_agent
+                    bytes.write_all(&start_height.to_le_bytes())?;
+                }
                 Message::Verack {} => {}
             }
 
