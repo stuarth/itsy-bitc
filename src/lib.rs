@@ -1,36 +1,75 @@
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
+use std::net::{TcpStream, SocketAddr};
+use std::collections::HashSet;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Network {
     magic: u32,
     port: u16,
+    nonces: HashSet<u64>,
 }
 
 use messages::Message;
+
+const VERSION: i32 = 31402;
+
+#[allow(non_camel_case_types)]
+#[repr(u64)]
+pub enum Services {
+    NODE_NETWORK = 1,
+    NODE_GETUTXO = 2,
+    NODE_BLOOM = 4,
+    NODE_WITNESS = 8,
+    NODE_XTHIN = 16,
+    NODE_COMPACT_FILTERS = 64,
+    NODE_NETWORK_LIMITED = 1024,
+}
+
+fn now() -> u64 {
+    use std::time::SystemTime;
+
+    let since_epoch = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("clock mishap");
+
+    since_epoch.as_secs()
+}
 
 impl Network {
     pub fn testnet() -> Self {
         Network {
             magic: 0xDAB5BFFA,
             port: 18333,
+            nonces: HashSet::new(),
         }
     }
 
-    pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> Result<Peer, io::Error> {
+    pub fn connect(&mut self, addr: SocketAddr) -> Result<Peer, io::Error> {
         let s = TcpStream::connect(addr)?;
 
         let peer = Peer {
             s,
             network: self.clone(),
+            addr,
+            version: None,
         };
 
         Ok(peer)
     }
 
-    pub fn version_message(&self) -> Message {
-        todo!()
+    pub fn version_message_for(&self, addr: &SocketAddr) -> Message {
+        Message::Version {
+            version: VERSION,
+            services: Services::NODE_NETWORK as u64,
+            addr_recv: addr.clone(),
+            addr_from: addr.clone(), // TODO fix
+            nonce: rand::random(),
+            user_agent: VarStr::new(""),
+            start_height: 0,
+            relay: true,
+            timestamp: now() as i64,
+        }
     }
 
     pub fn verack(&self) -> Message {
@@ -84,14 +123,29 @@ impl Network {
 pub struct Peer {
     s: TcpStream,
     network: Network,
+    addr: SocketAddr,
+    version: Option<i32>,
 }
 
 impl Peer {
     pub fn handshake(&mut self) -> Result<(), io::Error> {
-        let version_message = self.network.version_message();
+        // When the local peer (L) connects to a remote peer (R), the remote peer will not send any data until it receives a version message.
+
+        // L -> R: Send version message with the local peer's version
+        // R -> L: Send version message back
+        // R -> L: Send verack message
+        // R:      Sets version to the minimum of the 2 versions
+        // L -> R: Send verack message after receiving version message from R
+        // L:      Sets version to the minimum of the 2 versions
+
+        let version_message = self.network.version_message_for(&self.addr);
         self.send(version_message)?;
 
         Ok(())
+    }
+
+    pub fn set_version(&mut self, version: Option<i32>) {
+        self.version = version;
     }
 
     pub fn send(&mut self, message: messages::Message) -> io::Result<()> {
@@ -100,54 +154,148 @@ impl Peer {
 
         Ok(())
     }
+
+    pub fn receive(&mut self) -> io::Result<Message> {
+        todo!()
+    }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct NetAddr {
-    version_message: bool,
-    time: u32,
-    ip_addr: Ipv4Addr,
-    port: u16,
-}
+impl SerializeTo for SocketAddr {
+    fn serialize_to(&self, buf: &mut Vec<u8>, options: u8) -> io::Result<u8> {
+        use std::net::IpAddr;
 
-impl NetAddr {
-    pub fn serialize_to(&self) -> io::Result<Vec<u8>> {
-        let mut bytes =  vec![];
+        let include_time = !options & 0x1 == 0x1;
 
-        if !self.version_message {
-            // Time is not present in version message.
-            bytes.write_all(&self.time.to_le_bytes())?;
+        // TODO: encode as enum
+        if include_time {
+            buf.write_all(&(now() as u32).to_le_bytes())?;
         }
 
-        //ip_addr
-        self.ip_addr.serialize_to(&mut bytes)?;
+        // services
+        buf.write_all(&0u64.to_le_bytes())?; // TODO ???
 
-        // port is BE
-        bytes.write_all(&self.port.to_be_bytes())?;
+        match self.ip() {
+            IpAddr::V4(addr) => {
+                let as_u32 = u32::from_le_bytes(addr.octets());
+                buf.write_all(&(as_u32 as u128).to_le_bytes())?;
+            },
+            IpAddr::V6(addr) => {
+                buf.write_all(&addr.octets())?;
+            }
+        }
 
-        Ok(bytes)
+        buf.write_all(&self.port().to_be_bytes())?;
+
+        if include_time {
+            Ok(30)
+        } else {
+            Ok(26)
+        }
     }
 }
+
+// impl NetAddr {
+//     pub fn serialize_to(&self) -> io::Result<Vec<u8>> {
+//         let mut bytes = vec![];
+
+//         if !self.version_message {
+//             // Time is not present in version message.
+//             bytes.write_all(&(now() as u32).to_le_bytes())?;
+//         }
+
+//         //ip_addr
+//         self.ip_addr.serialize_to(&mut bytes)?;
+
+//         // port is BE
+//         bytes.write_all(&self.port.to_be_bytes())?;
+
+//         Ok(bytes)
+//     }
+// }
 
 pub trait SerializeTo {
-    fn serialize_to(&self, buf: &mut [u8]) -> io::Result<u8>;
+    fn serialize_to(&self, buf: &mut Vec<u8>, options: u8) -> io::Result<u8>;
 }
 
-impl SerializeTo for  Ipv4Addr {
-    fn serialize_to(&self, buf: &mut [u8]) -> io::Result<u8> {
-        let mut bytes = [0u8;  16];
-        (&mut bytes[12..]).write_all(&self.octets())?;
-        buf.copy_from_slice(&bytes);
+struct VarInt(u64);
 
-        Ok(16)
+impl VarInt {
+    fn new(v: u64) -> Self {
+        Self(v)
     }
 }
+
+impl SerializeTo for VarInt {
+    fn serialize_to(&self, buf: &mut Vec<u8>, _options: u8) -> io::Result<u8> {
+        // https://en.bitcoin.it/wiki/Protocol_documentation#Variable_length_integer
+
+        // Value	Storage length	Format
+        // < 0xFD	1	uint8_t
+        // <= 0xFFFF	3	0xFD followed by the length as uint16_t
+        // <= 0xFFFF FFFF	5	0xFE followed by the length as uint32_t
+        // -	9	0xFF followed by the length as uint64_t
+
+        let bytes_written = match self.0 {
+            v if v < 0xFDu64 => {
+                buf.write_all(&(v as u8).to_le_bytes())?;
+                1
+            }
+            v if v < 0xFFFFu64 => {
+                buf.write_all(&0xFDu8.to_le_bytes())?;
+                buf.write_all(&(v as u16).to_le_bytes())?;
+                3
+            }
+            v if v < 0xFFFF_FFFFu64 => {
+                buf.write_all(&0xFEu8.to_le_bytes())?;
+                buf.write_all(&(v as u32).to_le_bytes())?;
+                5
+            }
+            v @ _ => {
+                buf.write_all(&0xFFu8.to_le_bytes())?;
+                buf.write_all(&v.to_le_bytes())?;
+                9
+            }
+        };
+
+        Ok(bytes_written)
+    }
+}
+
+#[derive(Debug)]
+pub struct VarStr(String);
+
+impl SerializeTo for VarStr {
+    fn serialize_to(&self, mut buf: &mut Vec<u8>, _options: u8) -> io::Result<u8> {
+        let len = VarInt::new(self.0.len() as u64);
+        let len_bytes = len.serialize_to(&mut buf, 0)?;
+        let str_bytes = buf.write(self.0.as_bytes())?;
+
+        Ok(len_bytes + str_bytes as u8)
+    }
+}
+
+impl VarStr {
+    fn new<S: Into<String>>(s: S) -> Self {
+        Self(s.into())
+    }
+}
+
+// impl SerializeTo for Ipv4Addr {
+//     fn serialize_to(&self, mut buf: &mut Vec<u8>, _options: u8) -> io::Result<u8> {
+//         let mut bytes = [0u8; 16];
+//         (&mut bytes[12..]).write_all(&self.octets())?;
+//         buf.copy_from_slice(&bytes);
+
+//         Ok(16)
+//     }
+// }
 mod messages {
 
-    use super::NetAddr;
-    use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+    use crate::SerializeTo;
+
+    use super::{VarStr};
     use sha2::{Digest, Sha256};
-    use std::io::{self, Write};
+    use std::{io::{self, Write}, net::SocketAddr};
 
     #[derive(Debug)]
     pub enum Message {
@@ -155,10 +303,10 @@ mod messages {
             version: i32,
             services: u64,
             timestamp: i64,
-            addr_recv: NetAddr,
-            addr_from: NetAddr,
+            addr_recv: SocketAddr,
+            addr_from: SocketAddr,
             nonce: u64,
-            user_agent: String,
+            user_agent: VarStr,
             start_height: i32,
             relay: bool,
         },
@@ -186,11 +334,15 @@ mod messages {
                     bytes.write_all(&version.to_le_bytes())?;
                     bytes.write_all(&services.to_le_bytes())?;
                     bytes.write_all(&timestamp.to_le_bytes())?;
-                    // addr_recv
-                    // addr_from
+                    addr_recv.serialize_to(&mut bytes, 0)?;
+                    addr_from.serialize_to(&mut bytes, 0)?;
                     bytes.write_all(&nonce.to_le_bytes())?;
-                    // user_agent
+                    user_agent.serialize_to(&mut bytes, 0)?;
                     bytes.write_all(&start_height.to_le_bytes())?;
+
+                    if *version > 70001 {
+                        bytes.write_all(&[(*relay as u8)])?;
+                    }
                 }
                 Message::Verack {} => {}
             }
@@ -235,20 +387,55 @@ mod tests {
 
         match msg {
             Message::Verack { .. } => assert!(true),
-            _ => assert!(false)
+            _ => assert!(false),
         }
     }
 
     #[test]
     fn version_roundtrip() {
         let network = Network::testnet();
-        let version = network.version_message();
+        let version = network.version_message_for(&SocketAddr::from(([8,4,2,1], 18333)));
         let mut msg_bytes = network.serialize_to(&version).unwrap();
+
+        println!("{:x?}", &msg_bytes);
+
         let msg = network.deserialize_from(&mut msg_bytes).unwrap();
+
+        dbg!(&msg);
 
         match msg {
             Message::Version { .. } => assert!(true),
-            _ => assert!(false)
+            _ => assert!(false),
         }
+    }
+
+    #[test]
+    fn var_int_serialize_to() {
+        let mut buf = vec![];
+
+        VarInt::new(0).serialize_to(&mut buf, 0).unwrap();
+
+        assert_eq!(&buf, &[0x0]);
+
+        buf.clear();
+
+        VarInt::new(1).serialize_to(&mut buf, 0).unwrap();
+
+        assert_eq!(&buf, &[0x1]);
+
+        buf.clear();
+
+        VarInt::new(0xFFFF_FF).serialize_to(&mut buf, 0).unwrap();
+
+        assert_eq!(&buf, &[0xFE, 0xff, 0xff, 0xff, 0]);
+    }
+
+    #[test]
+    fn var_str_serialize_to() {
+        let mut buf = vec![];
+
+        VarStr::new("hello").serialize_to(&mut buf, 0).unwrap();
+
+        assert_eq!(buf, [0x5, 104, 101, 108, 108, 111]);
     }
 }
