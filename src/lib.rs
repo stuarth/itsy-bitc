@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashSet;
-use std::io::{self, Cursor};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::io::{self, Cursor, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 
 #[derive(Clone)]
 pub struct Network {
@@ -12,7 +12,7 @@ pub struct Network {
 
 use messages::Message;
 
-const VERSION: i32 = 31402;
+const VERSION: i32 = 70016;
 
 #[allow(non_camel_case_types)]
 #[repr(u64)]
@@ -80,8 +80,17 @@ pub trait ReadBitc: io::Read {
     fn read_message(&mut self) -> io::Result<Message> {
         let _magic = self.read_u32::<LittleEndian>()?;
 
+        dbg!(_magic);
+
         let mut command = [0u8; 12];
         self.read_exact(&mut command)?;
+
+        let command = std::str::from_utf8(&command[..])
+            .unwrap()
+            .trim_end_matches('\0')
+            .to_ascii_lowercase();
+
+        eprintln!("processing {}", &command);
 
         let length = self.read_u32::<LittleEndian>()?;
         let sha2 = self.read_u32::<LittleEndian>()?;
@@ -96,13 +105,6 @@ pub trait ReadBitc: io::Read {
                 "sha2 does not match!",
             ));
         }
-
-        let command = std::str::from_utf8(&command[..])
-            .unwrap()
-            .trim_end_matches('\0')
-            .to_ascii_lowercase();
-
-        eprintln!("processing {}", &command);
 
         let mut rdr = Cursor::new(payload);
 
@@ -162,14 +164,15 @@ impl<R: io::Read + ?Sized> ReadBitc for R {}
 impl Network {
     pub fn testnet() -> Self {
         Network {
-            magic: 0xDAB5BFFA,
+            magic: 0x0709110B,
             port: 18333,
             nonces: HashSet::new(),
         }
     }
 
-    pub fn connect(&mut self, addr: SocketAddr) -> Result<Peer, io::Error> {
+    pub fn connect<A: ToSocketAddrs>(&mut self, addr: A) -> io::Result<Peer> {
         let s = TcpStream::connect(addr)?;
+        let addr = s.peer_addr()?;
 
         let peer = Peer {
             s,
@@ -186,11 +189,11 @@ impl Network {
             version: VERSION,
             services: Services::NODE_NETWORK as u64,
             addr_recv: addr.clone(),
-            addr_from: addr.clone(), // TODO fix
+            addr_from: NetworkAddressNoTime::blank(),
             nonce: rand::random(),
-            user_agent: VarStr::new("MY AGENT"),
-            start_height: 0,
-            relay: None,
+            user_agent: VarStr::new("/Satoshi:0.21.1/"),
+            start_height: 1,
+            relay: Some(true),
             timestamp: now() as i64,
         }
     }
@@ -209,6 +212,8 @@ pub struct Peer {
 
 impl Peer {
     pub fn handshake(&mut self) -> Result<(), io::Error> {
+        // https://en.bitcoin.it/wiki/Version_Handshake
+
         // When the local peer (L) connects to a remote peer (R), the remote peer will not send any data until it receives a version message.
 
         // L -> R: Send version message with the local peer's version
@@ -223,8 +228,42 @@ impl Peer {
             services: Services::NODE_NETWORK as u64,
         };
 
-        let version_message = self.network.version_message_for(&addr);
-        self.send(version_message)?;
+        let version_msg = self.network.version_message_for(&addr);
+
+        dbg!(&version_msg);
+
+        self.send(version_msg)?;
+
+        dbg!("sent");
+
+        match self.s.read_message()? {
+            msg @ Message::Version { .. } => {
+                dbg!("received", &msg);
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "expected version message",
+                ))
+            }
+        }
+
+        match self.s.read_message()? {
+            msg @ Message::Verack { .. } => {
+                dbg!("received", &msg);
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "expected verack message",
+                ))
+            }
+        }
+
+        let verack_msg = self.network.verack();
+        self.send(verack_msg)?;
+
+        // set peer version
 
         Ok(())
     }
@@ -235,12 +274,13 @@ impl Peer {
 
     pub fn send(&mut self, message: messages::Message) -> io::Result<()> {
         self.s.write_message(&message, &self.network)?;
+        self.s.flush()?;
 
         Ok(())
     }
 
-    pub fn receive(&mut self) -> io::Result<Message> {
-        todo!()
+    pub fn read_message(&mut self) -> io::Result<Message> {
+        self.s.read_message()
     }
 }
 
@@ -260,8 +300,8 @@ pub struct NetworkAddressNoTime {
 impl NetworkAddressNoTime {
     pub fn blank() -> Self {
         Self {
-            services: 0,
-            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            services: Services::NODE_NETWORK as u64,
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         }
     }
 }
@@ -365,7 +405,7 @@ pub trait WriteBitc: io::Write {
             IpAddr::V4(ip) => {
                 self.write_all(&mut 0u32.to_be_bytes())?;
                 self.write_all(&mut 0u32.to_be_bytes())?;
-                self.write_all(&mut 0u32.to_be_bytes())?;
+                self.write_all(&mut 0xffffu32.to_be_bytes())?;
                 self.write_all(&mut ip.octets())?;
             }
             IpAddr::V6(ip) => {
