@@ -10,7 +10,7 @@ pub struct Network {
     nonces: HashSet<u64>,
 }
 
-use messages::Message;
+pub use messages::Message;
 
 const VERSION: i32 = 70016;
 
@@ -80,8 +80,6 @@ pub trait ReadBitc: io::Read {
     fn read_message(&mut self) -> io::Result<Message> {
         let _magic = self.read_u32::<LittleEndian>()?;
 
-        dbg!(_magic);
-
         let mut command = [0u8; 12];
         self.read_exact(&mut command)?;
 
@@ -109,6 +107,22 @@ pub trait ReadBitc: io::Read {
         let mut rdr = Cursor::new(payload);
 
         let message = match command.as_ref() {
+            "addr" => {
+                let count = rdr.read_varint()?;
+                let addrs = Vec::with_capacity(count.inner() as usize);
+
+                for _ in 0..count.inner() {}
+
+                Message::Addr { count, addrs }
+            }
+            "ping" => {
+                let nonce = rdr.read_u64::<LittleEndian>()?;
+                Message::Ping { nonce }
+            }
+            "pong" => {
+                let nonce = rdr.read_u64::<LittleEndian>()?;
+                Message::Pong { nonce }
+            }
             "verack" => Message::Verack {},
             "version" => {
                 // Field Size	Description	Data type	Comments
@@ -230,16 +244,10 @@ impl Peer {
 
         let version_msg = self.network.version_message_for(&addr);
 
-        dbg!(&version_msg);
-
         self.send(version_msg)?;
 
-        dbg!("sent");
-
         match self.s.read_message()? {
-            msg @ Message::Version { .. } => {
-                dbg!("received", &msg);
-            }
+            _msg @ Message::Version { .. } => (),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -249,9 +257,7 @@ impl Peer {
         }
 
         match self.s.read_message()? {
-            msg @ Message::Verack { .. } => {
-                dbg!("received", &msg);
-            }
+            _msg @ Message::Verack { .. } => (),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -282,6 +288,10 @@ impl Peer {
     pub fn read_message(&mut self) -> io::Result<Message> {
         self.s.read_message()
     }
+
+    pub fn pong_message(&self, nonce: u64) -> Message {
+        Message::Pong { nonce }
+    }
 }
 
 // 4	time	uint32	the Time (version >= 31402). Not present in version message.
@@ -304,6 +314,13 @@ impl NetworkAddressNoTime {
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkAddress {
+    time: u32,
+    services: u64,
+    addr: SocketAddr,
 }
 
 pub trait WriteBitc: io::Write {
@@ -364,6 +381,12 @@ pub trait WriteBitc: io::Write {
 
     fn write_message_body(&mut self, msg: &Message) -> io::Result<()> {
         match msg {
+            Message::Ping { nonce } => {
+                self.write_all(&nonce.to_le_bytes())?;
+            }
+            Message::Pong { nonce } => {
+                self.write_all(&nonce.to_le_bytes())?;
+            }
             Message::Version {
                 version,
                 services,
@@ -416,10 +439,29 @@ pub trait WriteBitc: io::Write {
 
         Ok(())
     }
+
+    fn write_network_address(&mut self, addr: &NetworkAddress) -> io::Result<()> {
+        self.write_all(&mut addr.services.to_le_bytes())?;
+        match addr.addr.ip() {
+            IpAddr::V4(ip) => {
+                self.write_all(&mut 0u32.to_be_bytes())?;
+                self.write_all(&mut 0u32.to_be_bytes())?;
+                self.write_all(&mut 0xffffu32.to_be_bytes())?;
+                self.write_all(&mut ip.octets())?;
+            }
+            IpAddr::V6(ip) => {
+                self.write_all(&mut ip.octets())?;
+            }
+        }
+        self.write_all(&mut addr.addr.port().to_be_bytes())?;
+
+        Ok(())
+    }
 }
 
 impl<W> WriteBitc for W where W: io::Write + ?Sized {}
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct VarInt(u64);
 
 impl VarInt {
@@ -442,7 +484,7 @@ impl VarStr {
 
 mod messages {
 
-    use crate::NetworkAddressNoTime;
+    use crate::{NetworkAddress, NetworkAddressNoTime, VarInt};
 
     use super::VarStr;
     use sha2::{Digest, Sha256};
@@ -450,6 +492,16 @@ mod messages {
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum Message {
+        Addr {
+            count: VarInt,
+            addrs: Vec<NetworkAddress>,
+        },
+        Ping {
+            nonce: u64,
+        },
+        Pong {
+            nonce: u64,
+        },
         Version {
             version: i32,
             services: u64,
@@ -470,6 +522,9 @@ mod messages {
     impl Message {
         pub fn command(&self) -> [u8; 12] {
             let s = match self {
+                Message::Addr { .. } => "addr",
+                Message::Ping { .. } => "ping",
+                Message::Pong { .. } => "pong",
                 Message::Version { .. } => "version",
                 Message::Verack { .. } => "verack",
                 Message::Unknown { .. } => "unknown??",

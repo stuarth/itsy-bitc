@@ -1,4 +1,4 @@
-use itsy_bitc::Network;
+use itsy_bitc::{Message, Network};
 use std::io::{self};
 
 fn main() -> io::Result<()> {
@@ -10,9 +10,16 @@ fn main() -> io::Result<()> {
     peer.handshake()?;
 
     loop {
-        let msg = peer.read_message();
-        dbg!(msg);
-    }
+        let msg = peer.read_message()?;
 
-    Ok(())
+        match msg {
+            Message::Ping { nonce } => {
+                let pong = peer.pong_message(nonce);
+                peer.send(pong)?;
+            }
+            _ => {
+                dbg!(&msg);
+            }
+        }
+    }
 }
