@@ -115,6 +115,10 @@ pub trait ReadBitc: io::Read {
 
                 Message::Addr { count, addrs }
             }
+            "feefilter" => {
+                let fee_rate = rdr.read_u64::<LittleEndian>()?;
+                Message::FeeFilter { fee_rate }
+            }
             "ping" => {
                 let nonce = rdr.read_u64::<LittleEndian>()?;
                 Message::Ping { nonce }
@@ -123,6 +127,14 @@ pub trait ReadBitc: io::Read {
                 let nonce = rdr.read_u64::<LittleEndian>()?;
                 Message::Pong { nonce }
             }
+            "sendcmpct" => {
+                let enabled_byte = rdr.read_u8()?;
+                let enabled = enabled_byte == 0x1;
+                let version = rdr.read_u64::<LittleEndian>()?;
+
+                Message::SendCmpct { enabled, version }
+            }
+            "sendheaders" => Message::SendHeaders {},
             "verack" => Message::Verack {},
             "version" => {
                 // Field Size	Description	Data type	Comments
@@ -496,12 +508,26 @@ mod messages {
             count: VarInt,
             addrs: Vec<NetworkAddress>,
         },
+        FeeFilter {
+            fee_rate: u64,
+        },
+        GetHeaders {
+            version: u32,
+            hash_count: VarInt,
+            block_locator_hashes: [u8; 32],
+            hash_stop: [u8; 32],
+        },
         Ping {
             nonce: u64,
         },
         Pong {
             nonce: u64,
         },
+        SendCmpct {
+            enabled: bool,
+            version: u64,
+        },
+        SendHeaders {},
         Version {
             version: i32,
             services: u64,
@@ -523,8 +549,12 @@ mod messages {
         pub fn command(&self) -> [u8; 12] {
             let s = match self {
                 Message::Addr { .. } => "addr",
+                Message::FeeFilter { .. } => "feefilter",
+                Message::GetHeaders { .. } => "getheaders",
                 Message::Ping { .. } => "ping",
                 Message::Pong { .. } => "pong",
+                Message::SendCmpct { .. } => "sendcmpct",
+                Message::SendHeaders { .. } => "sendheaders",
                 Message::Version { .. } => "version",
                 Message::Verack { .. } => "verack",
                 Message::Unknown { .. } => "unknown??",
