@@ -428,6 +428,13 @@ pub trait WriteBitc: io::Write {
         Ok(())
     }
 
+    fn write_inv_vec_element(&mut self, v: &InvVecElement) -> io::Result<()> {
+        self.write_all(&v.r#type.to_le_bytes())?;
+        self.write(&v.hash)?;
+
+        Ok(())
+    }
+
     fn write_message(&mut self, msg: &Message, network: &Network) -> io::Result<()> {
         // Almost all integers are encoded in little endian. Only IP or port number are encoded big endian. All field sizes are numbers of bytes.
 
@@ -447,12 +454,47 @@ pub trait WriteBitc: io::Write {
 
     fn write_message_body(&mut self, msg: &Message) -> io::Result<()> {
         match msg {
+            Message::Addr { count, addrs } => {
+                self.write_varint(&count)?;
+                for addr in addrs {
+                    self.write_network_address(addr)?;
+                }
+            }
+            Message::FeeFilter { fee_rate } => {
+                self.write_all(&fee_rate.to_le_bytes())?;
+            }
+            Message::GetHeaders {
+                version,
+                hash_count,
+                block_locator_hashes,
+                hash_stop,
+            } => {
+                self.write_all(&version.to_le_bytes())?;
+                self.write_varint(&hash_count)?;
+                self.write_all(block_locator_hashes)?;
+                self.write_all(hash_stop)?;
+            }
+            Message::Inv { count, inventory } => {
+                self.write_varint(&count)?;
+                for el in inventory {
+                    self.write_inv_vec_element(el)?;
+                }
+            }
             Message::Ping { nonce } => {
                 self.write_all(&nonce.to_le_bytes())?;
             }
             Message::Pong { nonce } => {
                 self.write_all(&nonce.to_le_bytes())?;
             }
+            Message::SendCmpct { enabled, version } => {
+                if *enabled {
+                    self.write(&1u8.to_le_bytes())?;
+                } else {
+                    self.write(&0u8.to_le_bytes())?;
+                }
+                self.write_all(&version.to_le_bytes())?;
+            }
+            Message::SendHeaders {} => {}
             Message::Version {
                 version,
                 services,
@@ -482,7 +524,7 @@ pub trait WriteBitc: io::Write {
                 }
             }
             Message::Verack {} => {}
-            _ => panic!("don't know how to serialize!"),
+            Message::Unknown { .. } => panic!("don't know how to serialize!"),
         }
 
         Ok(())
