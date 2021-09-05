@@ -67,7 +67,7 @@ pub trait ReadBitc: io::Read {
         Ok(InvVecElement { r#type, hash })
     }
 
-    fn read_network_address_no_time(&mut self) -> io::Result<NetworkAddressNoTime> {
+    fn read_network_address_no_time(&mut self) -> io::Result<NetworkAddress> {
         let services = self.read_u64::<LittleEndian>()?;
         let mut addr_bytes = [0u8; 16];
         self.read_exact(&mut addr_bytes)?;
@@ -79,7 +79,8 @@ pub trait ReadBitc: io::Read {
         );
         let port = self.read_u16::<BigEndian>()?;
 
-        Ok(NetworkAddressNoTime {
+        Ok(NetworkAddress {
+            time: None,
             services,
             addr: SocketAddr::from((addr, port)),
         })
@@ -99,7 +100,7 @@ pub trait ReadBitc: io::Read {
         let port = self.read_u16::<BigEndian>()?;
 
         Ok(NetworkAddress {
-            time,
+            time: Some(time),
             services,
             addr: SocketAddr::from((addr, port)),
         })
@@ -267,12 +268,12 @@ impl Network {
         Ok(peer)
     }
 
-    pub fn version_message_for(&self, addr: &NetworkAddressNoTime) -> Message {
+    pub fn version_message_for(&self, addr: &NetworkAddress) -> Message {
         Message::Version {
             version: VERSION,
             services: Services::NODE_NETWORK as u64,
             addr_recv: addr.clone(),
-            addr_from: NetworkAddressNoTime::blank(),
+            addr_from: NetworkAddress::blank(),
             nonce: rand::random(),
             user_agent: VarStr::new("/Satoshi:0.21.1/"),
             start_height: 1,
@@ -306,7 +307,8 @@ impl Peer {
         // L -> R: Send verack message after receiving version message from R
         // L:      Sets version to the minimum of the 2 versions
 
-        let addr = NetworkAddressNoTime {
+        let addr = NetworkAddress {
+            time: None,
             addr: self.addr,
             services: Services::NODE_NETWORK as u64,
         };
@@ -370,26 +372,21 @@ impl Peer {
 
 // 2	port	uint16_t	port number, network byte order
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NetworkAddressNoTime {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct NetworkAddress {
+    time: Option<u32>,
     services: u64,
     addr: SocketAddr,
 }
 
-impl NetworkAddressNoTime {
+impl NetworkAddress {
     pub fn blank() -> Self {
         Self {
+            time: None,
             services: Services::NODE_NETWORK as u64,
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NetworkAddress {
-    time: u32,
-    services: u64,
-    addr: SocketAddr,
 }
 
 pub trait WriteBitc: io::Write {
@@ -470,8 +467,8 @@ pub trait WriteBitc: io::Write {
                 self.write_all(&version.to_le_bytes())?;
                 self.write_all(&services.to_le_bytes())?;
                 self.write_all(&timestamp.to_le_bytes())?;
-                self.write_network_address_no_version(&addr_recv)?;
-                self.write_network_address_no_version(&addr_from)?;
+                self.write_network_address(&addr_recv)?;
+                self.write_network_address(&addr_from)?;
                 self.write_all(&nonce.to_le_bytes())?;
                 self.write_varstr(&user_agent)?;
                 self.write_all(&start_height.to_le_bytes())?;
@@ -491,25 +488,10 @@ pub trait WriteBitc: io::Write {
         Ok(())
     }
 
-    fn write_network_address_no_version(&mut self, addr: &NetworkAddressNoTime) -> io::Result<()> {
-        self.write_all(&mut addr.services.to_le_bytes())?;
-        match addr.addr.ip() {
-            IpAddr::V4(ip) => {
-                self.write_all(&mut 0u32.to_be_bytes())?;
-                self.write_all(&mut 0u32.to_be_bytes())?;
-                self.write_all(&mut 0xffffu32.to_be_bytes())?;
-                self.write_all(&mut ip.octets())?;
-            }
-            IpAddr::V6(ip) => {
-                self.write_all(&mut ip.octets())?;
-            }
-        }
-        self.write_all(&mut addr.addr.port().to_be_bytes())?;
-
-        Ok(())
-    }
-
     fn write_network_address(&mut self, addr: &NetworkAddress) -> io::Result<()> {
+        if let Some(time) = addr.time {
+            self.write_all(&time.to_le_bytes())?;
+        }
         self.write_all(&mut addr.services.to_le_bytes())?;
         match addr.addr.ip() {
             IpAddr::V4(ip) => {
@@ -559,7 +541,7 @@ pub struct InvVecElement {
 
 mod messages {
 
-    use crate::{InvVecElement, NetworkAddress, NetworkAddressNoTime, VarInt};
+    use crate::{InvVecElement, NetworkAddress, VarInt};
 
     use super::VarStr;
     use sha2::{Digest, Sha256};
@@ -599,8 +581,8 @@ mod messages {
             version: i32,
             services: u64,
             timestamp: i64,
-            addr_recv: NetworkAddressNoTime,
-            addr_from: NetworkAddressNoTime,
+            addr_recv: NetworkAddress,
+            addr_from: NetworkAddress,
             nonce: u64,
             user_agent: VarStr,
             start_height: i32,
@@ -671,7 +653,8 @@ mod tests {
     #[test]
     fn version_roundtrip() {
         let network = Network::testnet();
-        let addr = NetworkAddressNoTime {
+        let addr = NetworkAddress {
+            time: None,
             services: Services::NODE_NETWORK as u64,
             addr: SocketAddr::from(([8, 4, 2, 1], 18333)),
         };
