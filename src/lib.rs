@@ -480,6 +480,12 @@ pub trait WriteBitc: io::Write {
                     self.write_inv_vec_element(el)?;
                 }
             }
+            Message::NotFound { count, inventory } => {
+                self.write_varint(&count)?;
+                for el in inventory {
+                    self.write_inv_vec_element(el)?;
+                }
+            }
             Message::Ping { nonce } => {
                 self.write_all(&nonce.to_le_bytes())?;
             }
@@ -608,6 +614,10 @@ mod messages {
             count: VarInt,
             inventory: Vec<InvVecElement>,
         },
+        NotFound {
+            count: VarInt,
+            inventory: Vec<InvVecElement>,
+        },
         Ping {
             nonce: u64,
         },
@@ -643,6 +653,7 @@ mod messages {
                 Message::FeeFilter { .. } => "feefilter",
                 Message::GetHeaders { .. } => "getheaders",
                 Message::Inv { .. } => "inv",
+                Message::NotFound { .. } => "notfound",
                 Message::Ping { .. } => "ping",
                 Message::Pong { .. } => "pong",
                 Message::SendCmpct { .. } => "sendcmpct",
