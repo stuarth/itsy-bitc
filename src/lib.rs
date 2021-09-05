@@ -1,6 +1,6 @@
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::collections::HashSet;
-use std::io::{self, Cursor, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 
 #[derive(Clone)]
@@ -59,6 +59,14 @@ pub trait ReadBitc: io::Read {
         })?))
     }
 
+    fn read_inv_vec_element(&mut self) -> io::Result<InvVecElement> {
+        let r#type = self.read_u32::<LittleEndian>()?;
+        let mut hash = [0u8; 32];
+        self.read_exact(&mut hash)?;
+
+        Ok(InvVecElement { r#type, hash })
+    }
+
     fn read_network_address_no_time(&mut self) -> io::Result<NetworkAddressNoTime> {
         let services = self.read_u64::<LittleEndian>()?;
         let mut addr_bytes = [0u8; 16];
@@ -72,6 +80,26 @@ pub trait ReadBitc: io::Read {
         let port = self.read_u16::<BigEndian>()?;
 
         Ok(NetworkAddressNoTime {
+            services,
+            addr: SocketAddr::from((addr, port)),
+        })
+    }
+
+    fn read_network_address(&mut self) -> io::Result<NetworkAddress> {
+        let time = self.read_u32::<LittleEndian>()?;
+        let services = self.read_u64::<LittleEndian>()?;
+        let mut addr_bytes = [0u8; 16];
+        self.read_exact(&mut addr_bytes)?;
+        let addr = Ipv4Addr::new(
+            addr_bytes[12],
+            addr_bytes[13],
+            addr_bytes[14],
+            addr_bytes[15],
+        );
+        let port = self.read_u16::<BigEndian>()?;
+
+        Ok(NetworkAddress {
+            time,
             services,
             addr: SocketAddr::from((addr, port)),
         })
@@ -109,15 +137,44 @@ pub trait ReadBitc: io::Read {
         let message = match command.as_ref() {
             "addr" => {
                 let count = rdr.read_varint()?;
-                let addrs = Vec::with_capacity(count.inner() as usize);
+                let mut addrs = Vec::with_capacity(count.inner() as usize);
 
-                for _ in 0..count.inner() {}
+                for _ in 0..count.inner() {
+                    addrs.push(rdr.read_network_address()?);
+                }
 
                 Message::Addr { count, addrs }
             }
             "feefilter" => {
                 let fee_rate = rdr.read_u64::<LittleEndian>()?;
                 Message::FeeFilter { fee_rate }
+            }
+            "getheaders" => {
+                let version = rdr.read_u32::<LittleEndian>()?;
+                let hash_count = rdr.read_varint()?;
+
+                let mut block_locator_hashes = [0u8; 32];
+                rdr.read_exact(&mut block_locator_hashes)?;
+
+                let mut hash_stop = [0u8; 32];
+                rdr.read_exact(&mut hash_stop)?;
+
+                Message::GetHeaders {
+                    version,
+                    hash_count,
+                    block_locator_hashes,
+                    hash_stop,
+                }
+            }
+            "inv" => {
+                let count = rdr.read_varint()?;
+                let mut inventory = Vec::with_capacity(count.inner() as usize);
+
+                for _ in 0..count.inner() {
+                    inventory.push(rdr.read_inv_vec_element()?);
+                }
+
+                Message::Inv { count, inventory }
             }
             "ping" => {
                 let nonce = rdr.read_u64::<LittleEndian>()?;
@@ -494,9 +551,15 @@ impl VarStr {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvVecElement {
+    r#type: u32,
+    hash: [u8; 32],
+}
+
 mod messages {
 
-    use crate::{NetworkAddress, NetworkAddressNoTime, VarInt};
+    use crate::{InvVecElement, NetworkAddress, NetworkAddressNoTime, VarInt};
 
     use super::VarStr;
     use sha2::{Digest, Sha256};
@@ -516,6 +579,10 @@ mod messages {
             hash_count: VarInt,
             block_locator_hashes: [u8; 32],
             hash_stop: [u8; 32],
+        },
+        Inv {
+            count: VarInt,
+            inventory: Vec<InvVecElement>,
         },
         Ping {
             nonce: u64,
@@ -551,6 +618,7 @@ mod messages {
                 Message::Addr { .. } => "addr",
                 Message::FeeFilter { .. } => "feefilter",
                 Message::GetHeaders { .. } => "getheaders",
+                Message::Inv { .. } => "inv",
                 Message::Ping { .. } => "ping",
                 Message::Pong { .. } => "pong",
                 Message::SendCmpct { .. } => "sendcmpct",
